@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Search{% endblock %}
+{% block content %}
+  <h1>Search</h1>
+  {% if query %}
+    <p class="summary">{{ results|length }} result(s) for &ldquo;{{ query }}&rdquo;</p>
+    <ul class="notes">
+      {% for note in results %}
+        <li>
+          <a href="{{ url_for('view_note', note_id=note.id) }}">{{ note.title }}</a>
+          <p>{{ note.body }}</p>
+        </li>
+      {% else %}
+        <li class="empty">Nothing matched.</li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="empty">Type something in the search box above.</p>
+  {% endif %}
+{% endblock %}

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Log in{% endblock %}
+{% block content %}
+  <h1>Log in</h1>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <form class="login" method="post" action="{{ url_for('login') }}">
+    <input name="username" placeholder="Username" autocomplete="username" required>
+    <input name="password" type="password" placeholder="Password"
+           autocomplete="current-password" required>
+    <button type="submit">Log in</button>
+  </form>
+  <p class="hint">Demo account: <code>demo</code> / <code>demo-password</code></p>
+{% endblock %}

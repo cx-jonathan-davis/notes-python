@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Notes{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <a class="brand" href="{{ url_for('index') }}">Notes</a>
+    <form class="search" action="{{ url_for('search') }}" method="get">
+      <input type="search" name="q" placeholder="Search notes" value="{{ query|default('', true) }}">
+    </form>
+    <nav>
+      {% if session.username %}
+        <span class="who">{{ session.username }}</span>
+        <form method="post" action="{{ url_for('logout') }}"><button type="submit">Log out</button></form>
+      {% else %}
+        <a href="{{ url_for('login') }}">Log in</a>
+      {% endif %}
+    </nav>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

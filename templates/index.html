@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+  <h1>All notes</h1>
+
+  <form class="new-note" method="post" action="{{ url_for('add_note') }}">
+    <input name="title" placeholder="Title" required>
+    <textarea name="body" placeholder="Write something..." rows="3"></textarea>
+    <button type="submit">Add note</button>
+  </form>
+
+  {% if notes %}
+    <ul class="notes">
+      {% for note in notes %}
+        <li>
+          <a href="{{ url_for('view_note', note_id=note.id) }}">{{ note.title }}</a>
+          <p>{{ note.body }}</p>
+          <time>{{ note.created_at }}</time>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="empty">No notes yet.</p>
+  {% endif %}
+
+  <p class="hint">Sample attachment:
+    <a href="{{ url_for('attachment', name='sample.txt') }}">sample.txt</a></p>
+{% endblock %}
