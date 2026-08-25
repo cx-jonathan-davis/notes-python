@@ -9,6 +9,7 @@ from pathlib import Path
 
 from flask import (Flask, abort, redirect, render_template, request, session,
                    url_for)
+from jinja2 import select_autoescape
 from werkzeug.security import check_password_hash
 
 import db
@@ -20,6 +21,16 @@ app = Flask(__name__)
 # sessions simply do not survive a restart, which beats committing a fixed secret.
 app.secret_key = os.environ.get("NOTES_SECRET_KEY") or os.urandom(32)
 app.teardown_appcontext(db.close_db)
+
+# Explicitly enable Jinja2 auto-escaping for all HTML/XML templates.
+# This ensures that any database-sourced content rendered via {{ }} expressions
+# is HTML-escaped before output, preventing stored XSS attacks (CWE-79).
+app.jinja_env.autoescape = select_autoescape(
+    enabled_extensions=("html", "htm", "xml"),
+    disabled_extensions=("txt",),
+    default_for_string=True,
+    default=True,
+)
 
 
 @app.route("/health")
