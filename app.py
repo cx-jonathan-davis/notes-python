@@ -5,6 +5,7 @@ README for the seams where vulnerabilities get introduced in later PRs.
 """
 
 import os
+import secrets
 from pathlib import Path
 
 from flask import (Flask, abort, redirect, render_template, request, session,
@@ -20,6 +21,34 @@ app = Flask(__name__)
 # sessions simply do not survive a restart, which beats committing a fixed secret.
 app.secret_key = os.environ.get("NOTES_SECRET_KEY") or os.urandom(32)
 app.teardown_appcontext(db.close_db)
+
+
+def _get_csrf_token():
+    """Return the per-session CSRF token, generating one if it doesn't exist yet.
+
+    The token is stored in the server-side session (Flask's signed cookie) so it
+    cannot be read or forged by a cross-origin page.  Using secrets.token_hex()
+    guarantees cryptographic randomness.
+    """
+    if "csrf_token" not in session:
+        session["csrf_token"] = secrets.token_hex(32)
+    return session["csrf_token"]
+
+
+def _validate_csrf():
+    """Abort with 400 if the submitted CSRF token does not match the session token.
+
+    Uses hmac.compare_digest (via secrets.compare_digest) for a constant-time
+    comparison to prevent timing-based token oracle attacks.
+    """
+    token_from_form = request.form.get("csrf_token", "")
+    token_from_session = session.get("csrf_token", "")
+    if not secrets.compare_digest(token_from_form, token_from_session):
+        abort(400)
+
+
+# Make the CSRF token available to every template automatically.
+app.jinja_env.globals["csrf_token"] = _get_csrf_token
 
 
 @app.after_request
@@ -55,6 +84,7 @@ def view_note(note_id):
 
 @app.route("/notes", methods=["POST"])
 def add_note():
+    _validate_csrf()
     title = request.form.get("title", "").strip()
     body = request.form.get("body", "").strip()
     if not title:
@@ -74,6 +104,10 @@ def login():
     if request.method == "GET":
         return render_template("login.html", error=None)
 
+    # Verify the synchronizer token before processing any form data to prevent
+    # Cross-Site Request Forgery (CWE-352).
+    _validate_csrf()
+
     user = db.find_user(request.form.get("username", ""))
     password = request.form.get("password", "")
     # check_password_hash is constant-time and handles the salt/algorithm prefix.
@@ -87,6 +121,7 @@ def login():
 
 @app.route("/logout", methods=["POST"])
 def logout():
+    _validate_csrf()
     session.clear()
     return redirect(url_for("index"))
 
