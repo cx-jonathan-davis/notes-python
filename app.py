@@ -22,6 +22,19 @@ app.secret_key = os.environ.get("NOTES_SECRET_KEY") or os.urandom(32)
 app.teardown_appcontext(db.close_db)
 
 
+@app.after_request
+def set_security_headers(response):
+    """Add HTTP Strict Transport Security (HSTS) and other security headers.
+
+    HSTS tells browsers to only contact this site over HTTPS for the next year
+    (max-age=31536000). includeSubDomains extends the policy to all subdomains.
+    """
+    response.headers["Strict-Transport-Security"] = (
+        "max-age=31536000; includeSubDomains"
+    )
+    return response
+
+
 @app.route("/health")
 def health():
     return {"status": "ok"}
