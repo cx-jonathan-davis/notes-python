@@ -15,7 +15,7 @@
     <nav>
       {% if session.username %}
         <span class="who">{{ session.username }}</span>
-        <form method="post" action="{{ url_for('logout') }}"><button type="submit">Log out</button></form>
+        <form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit">Log out</button></form>
       {% else %}
         <a href="{{ url_for('login') }}">Log in</a>
       {% endif %}
