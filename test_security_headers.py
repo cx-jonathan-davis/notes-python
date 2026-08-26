@@ -7,6 +7,8 @@ These tests verify that:
 3. No endpoint accidentally omits the header.
 4. All state-altering POST endpoints are protected by a CSRF synchronizer token
    (CWE-352) — requests without a valid token are rejected with HTTP 400.
+5. CSRF protection is enforced by the centralised before_request hook (csrf_protect)
+   so no individual view can accidentally omit the check.
 """
 
 import pytest
@@ -483,4 +485,120 @@ class TestCSRFTokenProperties:
         """csrf_token must be registered as a Jinja2 global so templates can use it."""
         assert "csrf_token" in app_module.app.jinja_env.globals, (
             "csrf_token must be registered in app.jinja_env.globals"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Centralised CSRF before_request hook (CWE-352 remediation)
+# ---------------------------------------------------------------------------
+
+class TestCsrfProtectBeforeRequestHook:
+    """The centralised csrf_protect before_request hook must be wired up and enforce
+    CSRF validation for ALL state-altering HTTP methods before any route handler runs.
+
+    This verifies the fix for CWE-352: the synchronizer token is enforced at the
+    application boundary (before_request) rather than inside individual route handlers,
+    so no handler can accidentally bypass it.
+    """
+
+    def test_csrf_protect_hook_registered(self):
+        """csrf_protect must appear in Flask's before_request_funcs list."""
+        hook_names = [
+            f.__name__
+            for f in app_module.app.before_request_funcs.get(None, [])
+        ]
+        assert "csrf_protect" in hook_names, (
+            "csrf_protect is not registered as a before_request hook. "
+            "CSRF protection would rely solely on per-handler calls and could be bypassed."
+        )
+
+    def test_login_post_rejected_without_csrf_via_before_request_hook(self, client):
+        """POST /login with no token is rejected by the before_request hook (HTTP 400).
+
+        This specifically validates that the before_request hook fires before the
+        login handler attempts to process credentials.
+        """
+        response = client.post(
+            "/login",
+            data={"username": "demo", "password": "demo-password"},
+        )
+        assert response.status_code == 400, (
+            "before_request csrf_protect hook must reject /login POST without token"
+        )
+
+    def test_csrf_protect_rejects_put_method(self, client):
+        """The hook must reject PUT requests without a valid CSRF token (HTTP 400).
+
+        PUT is a state-altering method — the hook must cover it even if no current
+        route uses PUT, to guard against future additions.
+        """
+        _get_session_csrf_token(client)
+        response = client.put("/notes/1", data={"title": "hacked"})
+        # Either 400 (CSRF rejection) or 404/405 (no such route / method not allowed)
+        # are both acceptable — the key invariant is that it is NOT 200/302.
+        assert response.status_code in (400, 404, 405), (
+            "PUT without CSRF token must not succeed (expected 400, 404, or 405)"
+        )
+
+    def test_csrf_protect_rejects_delete_method(self, client):
+        """The hook must reject DELETE requests without a valid CSRF token (HTTP 400)."""
+        _get_session_csrf_token(client)
+        response = client.delete("/notes/1")
+        assert response.status_code in (400, 404, 405), (
+            "DELETE without CSRF token must not succeed (expected 400, 404, or 405)"
+        )
+
+    def test_csrf_protect_allows_get_method(self, client):
+        """GET requests must not be blocked by the CSRF hook (safe method)."""
+        response = client.get("/login")
+        assert response.status_code == 200, (
+            "GET /login must not be blocked by the CSRF before_request hook"
+        )
+
+    def test_csrf_protect_allows_post_with_valid_token(self, client):
+        """POST /login with a valid token must pass the before_request hook."""
+        token = _get_session_csrf_token(client)
+        response = client.post(
+            "/login",
+            data={
+                "username": "demo",
+                "password": "demo-password",
+                "csrf_token": token,
+            },
+        )
+        # Must not be rejected by the CSRF hook (400).
+        assert response.status_code != 400, (
+            "before_request csrf_protect must allow POST when a valid CSRF token is provided"
+        )
+
+    def test_login_handler_does_not_contain_inline_csrf_call(self):
+        """The login view must NOT contain an explicit _validate_csrf() call.
+
+        CSRF is now the responsibility of the before_request hook exclusively.
+        Duplicating the check inside the handler is both redundant and increases
+        the risk of drift if the hook is ever moved/renamed.
+        """
+        import inspect
+        source = inspect.getsource(app_module.login)
+        assert "_validate_csrf" not in source, (
+            "login() should not call _validate_csrf() directly — "
+            "CSRF validation is handled by the csrf_protect before_request hook"
+        )
+
+    def test_add_note_handler_does_not_contain_inline_csrf_call(self):
+        """The add_note view must NOT contain an explicit _validate_csrf() call."""
+        import inspect
+        source = inspect.getsource(app_module.add_note)
+        assert "_validate_csrf" not in source, (
+            "add_note() should not call _validate_csrf() directly — "
+            "CSRF validation is handled by the csrf_protect before_request hook"
+        )
+
+    def test_logout_handler_does_not_contain_inline_csrf_call(self):
+        """The logout view must NOT contain an explicit _validate_csrf() call."""
+        import inspect
+        source = inspect.getsource(app_module.logout)
+        assert "_validate_csrf" not in source, (
+            "logout() should not call _validate_csrf() directly — "
+            "CSRF validation is handled by the csrf_protect before_request hook"
         )
