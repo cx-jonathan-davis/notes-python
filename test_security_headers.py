@@ -1,10 +1,12 @@
-"""Tests for HTTP security headers — specifically the HSTS header remediation.
+"""Tests for HTTP security headers and CSRF protection.
 
 These tests verify that:
 1. Every response includes a valid Strict-Transport-Security (HSTS) header.
 2. The HSTS value meets minimum security requirements (max-age >= 1 year,
    includeSubDomains present).
 3. No endpoint accidentally omits the header.
+4. All state-altering POST endpoints are protected by a CSRF synchronizer token
+   (CWE-352) — requests without a valid token are rejected with HTTP 400.
 """
 
 import pytest
@@ -207,4 +209,278 @@ class TestSecurityHeadersHookRegistered:
         assert "set_security_headers" in hook_names, (
             "set_security_headers is not registered as an after_request hook. "
             "The HSTS header will never be sent."
+        )
+
+
+# ---------------------------------------------------------------------------
+# CSRF token generation and helpers
+# ---------------------------------------------------------------------------
+
+def _get_session_csrf_token(client):
+    """Obtain the CSRF token by performing a GET to /login.
+
+    The GET request triggers _get_csrf_token() which stores the token in the
+    session cookie; the Flask test client persists the cookie for subsequent
+    requests.
+    """
+    client.get("/login")
+    with client.session_transaction() as sess:
+        return sess.get("csrf_token", "")
+
+
+# ---------------------------------------------------------------------------
+# CSRF protection — login endpoint (CWE-352)
+# ---------------------------------------------------------------------------
+
+class TestLoginCSRFProtection:
+    """The /login POST endpoint must reject requests without a valid CSRF token."""
+
+    def test_login_post_without_csrf_token_returns_400(self, client):
+        """POST /login with no csrf_token field must be rejected (HTTP 400)."""
+        response = client.post(
+            "/login",
+            data={"username": "demo", "password": "demo-password"},
+        )
+        assert response.status_code == 400, (
+            "Expected HTTP 400 when no CSRF token is submitted to /login"
+        )
+
+    def test_login_post_with_wrong_csrf_token_returns_400(self, client):
+        """POST /login with an incorrect CSRF token must be rejected (HTTP 400)."""
+        # Seed the session with a real token so the session exists.
+        _get_session_csrf_token(client)
+        response = client.post(
+            "/login",
+            data={
+                "username": "demo",
+                "password": "demo-password",
+                "csrf_token": "totally-wrong-token",
+            },
+        )
+        assert response.status_code == 400, (
+            "Expected HTTP 400 when a wrong CSRF token is submitted to /login"
+        )
+
+    def test_login_post_with_valid_csrf_token_succeeds(self, client):
+        """POST /login with a valid CSRF token must be processed (not rejected with 400)."""
+        token = _get_session_csrf_token(client)
+        response = client.post(
+            "/login",
+            data={
+                "username": "demo",
+                "password": "demo-password",
+                "csrf_token": token,
+            },
+        )
+        # A valid login redirects to index (302), an invalid credential returns 401,
+        # but either way the CSRF check must pass (status must not be 400).
+        assert response.status_code != 400, (
+            "Valid CSRF token must not be rejected by the login endpoint"
+        )
+
+    def test_login_post_with_empty_csrf_token_returns_400(self, client):
+        """POST /login with an empty csrf_token string must be rejected (HTTP 400)."""
+        _get_session_csrf_token(client)
+        response = client.post(
+            "/login",
+            data={
+                "username": "demo",
+                "password": "demo-password",
+                "csrf_token": "",
+            },
+        )
+        assert response.status_code == 400
+
+    def test_login_get_does_not_require_csrf_token(self, client):
+        """GET /login must succeed without any CSRF token (read-only, no state change)."""
+        response = client.get("/login")
+        assert response.status_code == 200
+
+    def test_login_form_contains_csrf_token_field(self, client):
+        """The login page HTML must include a hidden csrf_token input field."""
+        response = client.get("/login")
+        assert b'name="csrf_token"' in response.data, (
+            "The rendered login form must include a hidden csrf_token input"
+        )
+
+    def test_login_csrf_token_is_non_empty_in_session(self, client):
+        """After GET /login the session must contain a non-empty csrf_token."""
+        token = _get_session_csrf_token(client)
+        assert token, "Session csrf_token must not be empty after GET /login"
+
+    def test_successful_login_redirects_to_index(self, client):
+        """A POST /login with correct credentials AND a valid token redirects to /."""
+        token = _get_session_csrf_token(client)
+        response = client.post(
+            "/login",
+            data={
+                "username": "demo",
+                "password": "demo-password",
+                "csrf_token": token,
+            },
+        )
+        assert response.status_code == 302
+        assert response.headers["Location"].endswith("/")
+
+    def test_failed_login_returns_401(self, client):
+        """A POST /login with wrong credentials AND a valid token returns 401."""
+        token = _get_session_csrf_token(client)
+        response = client.post(
+            "/login",
+            data={
+                "username": "demo",
+                "password": "wrong-password",
+                "csrf_token": token,
+            },
+        )
+        assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# CSRF protection — add_note endpoint
+# ---------------------------------------------------------------------------
+
+class TestAddNoteCSRFProtection:
+    """The /notes POST endpoint must reject requests without a valid CSRF token."""
+
+    def test_add_note_without_csrf_token_returns_400(self, client):
+        """POST /notes with no csrf_token must be rejected (HTTP 400)."""
+        response = client.post(
+            "/notes",
+            data={"title": "Injected note", "body": "CSRF body"},
+        )
+        assert response.status_code == 400
+
+    def test_add_note_with_wrong_csrf_token_returns_400(self, client):
+        """POST /notes with an incorrect CSRF token must be rejected (HTTP 400)."""
+        _get_session_csrf_token(client)
+        response = client.post(
+            "/notes",
+            data={
+                "title": "Injected note",
+                "body": "CSRF body",
+                "csrf_token": "attacker-controlled-token",
+            },
+        )
+        assert response.status_code == 400
+
+    def test_add_note_with_valid_csrf_token_succeeds(self, client):
+        """POST /notes with a valid CSRF token must be processed (redirect, not 400)."""
+        token = _get_session_csrf_token(client)
+        response = client.post(
+            "/notes",
+            data={
+                "title": "Legitimate note",
+                "body": "Created with valid CSRF token",
+                "csrf_token": token,
+            },
+        )
+        assert response.status_code == 302
+
+    def test_add_note_form_contains_csrf_token_field(self, client):
+        """The index page HTML must include a hidden csrf_token input in the note form."""
+        response = client.get("/")
+        assert b'name="csrf_token"' in response.data, (
+            "The rendered add-note form must include a hidden csrf_token input"
+        )
+
+
+# ---------------------------------------------------------------------------
+# CSRF protection — logout endpoint
+# ---------------------------------------------------------------------------
+
+class TestLogoutCSRFProtection:
+    """The /logout POST endpoint must reject requests without a valid CSRF token."""
+
+    def test_logout_without_csrf_token_returns_400(self, client):
+        """POST /logout with no csrf_token must be rejected (HTTP 400)."""
+        response = client.post("/logout")
+        assert response.status_code == 400
+
+    def test_logout_with_wrong_csrf_token_returns_400(self, client):
+        """POST /logout with a wrong CSRF token must be rejected (HTTP 400)."""
+        _get_session_csrf_token(client)
+        response = client.post(
+            "/logout",
+            data={"csrf_token": "wrong-token"},
+        )
+        assert response.status_code == 400
+
+    def test_logout_with_valid_csrf_token_redirects(self, client):
+        """POST /logout with a valid CSRF token must succeed (redirect, not 400)."""
+        token = _get_session_csrf_token(client)
+        response = client.post(
+            "/logout",
+            data={"csrf_token": token},
+        )
+        assert response.status_code == 302
+
+    def test_logout_form_in_base_template_contains_csrf_token(self, client):
+        """The base template's logout form must include a hidden csrf_token input."""
+        # First log in so the logout form is rendered.
+        token = _get_session_csrf_token(client)
+        client.post(
+            "/login",
+            data={
+                "username": "demo",
+                "password": "demo-password",
+                "csrf_token": token,
+            },
+        )
+        # Re-fetch the token after login (session was cleared and new session started).
+        with client.session_transaction() as sess:
+            new_token = sess.get("csrf_token", "")
+        # The index page (which uses base.html) must contain the csrf_token hidden field.
+        response = client.get("/")
+        assert b'name="csrf_token"' in response.data, (
+            "The base template logout form must include a hidden csrf_token input "
+            "when the user is logged in"
+        )
+        assert new_token.encode() in response.data, (
+            "The CSRF token value in the rendered page must match the session token"
+        )
+
+
+# ---------------------------------------------------------------------------
+# CSRF token properties
+# ---------------------------------------------------------------------------
+
+class TestCSRFTokenProperties:
+    """Verify the CSRF token implementation meets security requirements."""
+
+    def test_csrf_token_has_sufficient_length(self, client):
+        """The CSRF token must be at least 32 hex characters (128 bits of entropy)."""
+        token = _get_session_csrf_token(client)
+        assert len(token) >= 32, (
+            f"CSRF token length {len(token)} is below the 32-character minimum"
+        )
+
+    def test_csrf_token_is_hexadecimal(self, client):
+        """The CSRF token must consist of hexadecimal characters only."""
+        token = _get_session_csrf_token(client)
+        assert all(c in "0123456789abcdef" for c in token), (
+            "CSRF token must be a hexadecimal string (output of secrets.token_hex)"
+        )
+
+    def test_csrf_token_is_stable_within_session(self, client):
+        """Multiple GET requests within the same session must return the same token."""
+        token1 = _get_session_csrf_token(client)
+        token2 = _get_session_csrf_token(client)
+        assert token1 == token2, (
+            "The CSRF token must remain stable within a single session"
+        )
+
+    def test_csrf_helper_functions_registered(self):
+        """_get_csrf_token and _validate_csrf must exist on the app module."""
+        assert hasattr(app_module, "_get_csrf_token"), (
+            "_get_csrf_token helper is missing from app module"
+        )
+        assert hasattr(app_module, "_validate_csrf"), (
+            "_validate_csrf helper is missing from app module"
+        )
+
+    def test_csrf_token_in_jinja_globals(self):
+        """csrf_token must be registered as a Jinja2 global so templates can use it."""
+        assert "csrf_token" in app_module.app.jinja_env.globals, (
+            "csrf_token must be registered in app.jinja_env.globals"
         )
