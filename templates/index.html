@@ -3,6 +3,7 @@
   <h1>All notes</h1>
 
   <form class="new-note" method="post" action="{{ url_for('add_note') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input name="title" placeholder="Title" required>
     <textarea name="body" placeholder="Write something..." rows="3"></textarea>
     <button type="submit">Add note</button>
