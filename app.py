@@ -51,6 +51,26 @@ def _validate_csrf():
 app.jinja_env.globals["csrf_token"] = _get_csrf_token
 
 
+@app.before_request
+def csrf_protect():
+    """Enforce CSRF token validation for all state-altering HTTP methods.
+
+    This before_request hook runs before every route handler and rejects any
+    POST, PUT, PATCH, or DELETE request that does not supply a valid CSRF
+    synchronizer token (CWE-352).  Centralising the check here means no
+    individual view can accidentally omit it, and static analysers can trace
+    the protection at the application boundary rather than inside each handler.
+
+    The token is compared with secrets.compare_digest (constant-time) to
+    prevent timing-based oracle attacks.
+    """
+    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        token_from_form = request.form.get("csrf_token", "")
+        token_from_session = session.get("csrf_token", "")
+        if not secrets.compare_digest(token_from_form, token_from_session):
+            abort(400)
+
+
 @app.after_request
 def set_security_headers(response):
     """Add HTTP Strict Transport Security (HSTS) and other security headers.
@@ -84,7 +104,6 @@ def view_note(note_id):
 
 @app.route("/notes", methods=["POST"])
 def add_note():
-    _validate_csrf()
     title = request.form.get("title", "").strip()
     body = request.form.get("body", "").strip()
     if not title:
@@ -104,10 +123,6 @@ def login():
     if request.method == "GET":
         return render_template("login.html", error=None)
 
-    # Verify the synchronizer token before processing any form data to prevent
-    # Cross-Site Request Forgery (CWE-352).
-    _validate_csrf()
-
     user = db.find_user(request.form.get("username", ""))
     password = request.form.get("password", "")
     # check_password_hash is constant-time and handles the salt/algorithm prefix.
@@ -121,7 +136,6 @@ def login():
 
 @app.route("/logout", methods=["POST"])
 def logout():
-    _validate_csrf()
     session.clear()
     return redirect(url_for("index"))
 
